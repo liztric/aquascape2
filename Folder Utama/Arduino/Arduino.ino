@@ -5,11 +5,13 @@
 #include <DallasTemperature.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
-#include <WiFiManager.h> // Gunakan WiFiManager untuk koneksi Wi-Fi
+#include <WiFiManager.h>
+#include <BH1750.h>
 
 #define API_KEY "AIzaSyBgD_196K9e0NmyVbGtHxlyVAdgpGu5Yyo"
 #define DATABASE_URL "https://aquascape-ffef6-default-rtdb.asia-southeast1.firebasedatabase.app/"
 #define PH_SENSOR_PIN 34
+#define TURBIDITY_PIN 35
 #define ONE_WIRE_BUS 4
 
 #define RELAY_LED_PIN 14
@@ -27,6 +29,7 @@ OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
 LiquidCrystal_I2C lcd(0x27, 20, 4);
+BH1750 lightMeter;
 
 float PH4 = 3.2992;
 float PH9 = 2.7856;
@@ -40,6 +43,24 @@ bool signupOK = false;
 
 bool ledStatus = false;
 bool fanStatus = false;
+
+// Fungsi untuk menghitung kejernihan berdasarkan nilai tegangan turbidity
+String readClarity() {
+    int nilai_analog_turbidity = analogRead(TURBIDITY_PIN);
+    int tegangan_turbidity = map(nilai_analog_turbidity, 0, 4095, 0, 3300);
+    int clarity_percentage = map(tegangan_turbidity, 400, 3000, 0, 100);
+    if (clarity_percentage < 0) clarity_percentage = 0;
+    if (clarity_percentage > 100) clarity_percentage = 100;
+
+    // Menentukan status kejernihan
+    if (clarity_percentage < 30) {
+        return "Kotor";
+    } else if (clarity_percentage < 70) {
+        return "Keruh";
+    } else {
+        return "Jernih";
+    }
+}
 
 void connectToWiFi() {
     lcd.setCursor(0, 0);
@@ -91,12 +112,12 @@ void updateRelayStatus() {
     }
 }
 
-void setRGBColor(float temperature) {
+void setRGBColor(int temperature) {
     if (temperature < 20) {
         analogWrite(RED_PIN, 0);
         analogWrite(GREEN_PIN, 0);
         analogWrite(BLUE_PIN, 255);
-    } else if (temperature < 32) { // Suhu sedang (hijau)
+    } else if (temperature < 32) {
         analogWrite(RED_PIN, 0);
         analogWrite(GREEN_PIN, 255);
         analogWrite(BLUE_PIN, 0);
@@ -107,26 +128,35 @@ void setRGBColor(float temperature) {
     }
 }
 
-void displayData(int temperature, int pH, bool ledStatus, bool fanStatus) {
+void displayData(int temperature, int pH, int lux, String clarity, bool ledStatus, bool fanStatus) {
     lcd.clear();
-    lcd.setCursor(0, 0);
+    lcd.setCursor(0, 1);
     lcd.print(F("Suhu :"));
     lcd.print(temperature);
     lcd.write(0xDF);
     lcd.print(F("C"));
 
-    lcd.setCursor(0, 1);
-    lcd.print(F("pH   : "));
-    lcd.print(pH);
-    lcd.print(F("     "));
+    lcd.setCursor(0, 0);
+    lcd.print(F("Air  :"));
+    lcd.print(clarity);  // Tampilkan status kejernihan sebagai string
 
     lcd.setCursor(0, 2);
-    lcd.print(F("Lampu: "));
-    lcd.print(ledStatus ? F("ON  ") : F("OFF "));
-    
+    lcd.print(F("pH   :"));
+    lcd.print(pH);
+    lcd.print(F(""));
+
     lcd.setCursor(0, 3);
-    lcd.print(F("Kipas: "));
-    lcd.print(fanStatus ? F("ON  ") : F("OFF "));
+    lcd.print(F("Lux  :"));
+    lcd.print(lux);
+    lcd.print(F(""));
+
+    lcd.setCursor(11, 2);
+    lcd.print(F("| Led:"));
+    lcd.print(ledStatus ? F("ON") : F("OFF"));
+
+    lcd.setCursor(11, 3);
+    lcd.print(F("| Fan:"));
+    lcd.print(fanStatus ? F("ON") : F("OFF"));
 
     delay(2000);
 }
@@ -135,6 +165,7 @@ void setup() {
     Serial.begin(115200);
     
     pinMode(PH_SENSOR_PIN, INPUT);
+    pinMode(TURBIDITY_PIN, INPUT);
     pinMode(RELAY_LED_PIN, OUTPUT);
     pinMode(RELAY_FAN_PIN, OUTPUT);
     digitalWrite(RELAY_LED_PIN, LOW);
@@ -159,12 +190,11 @@ void setup() {
 
     config.api_key = API_KEY;
     config.database_url = DATABASE_URL;
-    // Hapus atau definisikan tokenStatusCallback jika tidak digunakan
-    // config.token_status_callback = tokenStatusCallback;
 
     handleFirebaseConnection();
 
     sensors.begin();
+    lightMeter.begin();
 }
 
 void loop() {
@@ -176,41 +206,46 @@ void loop() {
         PH_step = (PH4 - PH9) / 5.17;
         Po = 7.00 + ((PH9 - TeganganPh) / PH_step);
 
-        Serial.print(F("Nilai ADC PH = "));
-        Serial.println(nilai_analog_PH);
-        Serial.print(F("TeganganPh = "));
-        Serial.println(TeganganPh, 3);
-        Serial.print(F("Nilai PH cairan = "));
-        Serial.println(Po, 2);
-
         sensors.requestTemperatures();
-        float temperature = sensors.getTempCByIndex(0);
+        int temperature = static_cast<int>(sensors.getTempCByIndex(0));
+        int lux = static_cast<int>(lightMeter.readLightLevel());
+        String clarity = readClarity(); // Ambil status kejernihan sebagai string
+
+        // Kontrol kipas berdasarkan suhu
+        fanStatus = (temperature > 30);
+        digitalWrite(RELAY_FAN_PIN, fanStatus ? HIGH : LOW);
+        Firebase.RTDB.setBool(&fbdo, "relays/fan", fanStatus);
+
+        // Kontrol lampu berdasarkan pembacaan lux
+        ledStatus = (lux < 200);
+        digitalWrite(RELAY_LED_PIN, ledStatus ? HIGH : LOW);
+        Firebase.RTDB.setBool(&fbdo, "relays/led", ledStatus); // Kirim status LED ke Firebase
 
         setRGBColor(temperature);
-
         updateRelayStatus();
 
-        int tempInt = static_cast<int>(temperature);
         int pHInt = static_cast<int>(Po);
-
-        displayData(tempInt, pHInt, ledStatus, fanStatus);
+        displayData(temperature, pHInt, lux, clarity, ledStatus, fanStatus);
 
         bool dataSent = false;
         int retryCount = 0;
 
+        // Kirim kejernihan ke Firebase
         while (!dataSent && retryCount < 3) {
-            if (Firebase.RTDB.setInt(&fbdo, "sensors/ph", pHInt) &&
-                Firebase.RTDB.setInt(&fbdo, "sensors/temperature", tempInt)) {
-                Serial.println(F("Nilai pH dan suhu telah dikirim ke Firebase."));
+            if (Firebase.RTDB.setString(&fbdo, "sensors/clarity", clarity) &&
+                Firebase.RTDB.setInt(&fbdo, "sensors/ph", pHInt) &&
+                Firebase.RTDB.setInt(&fbdo, "sensors/temperature", temperature) &&
+                Firebase.RTDB.setInt(&fbdo, "sensors/lux", lux)) {
+                Serial.println(F("Nilai pH, suhu, cahaya, dan kejernihan telah dikirim ke Firebase."));
                 dataSent = true;
             } else {
-                // Konversi MB_String ke String atau const char* sebelum mencetak
-                Serial.println(String(F("GAGAL mengirim data. Alasan: ")) + fbdo.errorReason().c_str());
+                Serial.printf("Kesalahan saat mengirim data ke Firebase: %s\n", fbdo.errorReason().c_str());
                 retryCount++;
-                delay(1000);
+                delay(1000); // Tunggu sebelum mencoba lagi
             }
         }
-
-        delay(3000);
     }
+
+    // Pembaruan status relai dari Firebase
+    updateRelayStatus();
 }
