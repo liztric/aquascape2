@@ -12,10 +12,10 @@
 #define DATABASE_URL "https://aquascape-ffef6-default-rtdb.asia-southeast1.firebasedatabase.app/"
 #define PH_SENSOR_PIN 34
 #define TURBIDITY_PIN 35
-#define ONE_WIRE_BUS 4
+#define ONE_WIRE_BUS 32
 
-#define RELAY_LED_PIN 14
-#define RELAY_FAN_PIN 12
+#define RELAY_LED_PIN 5  // GPIO untuk relay LED
+#define RELAY_FAN_PIN 18  // GPIO untuk relay kipas
 
 #define RED_PIN 27
 #define GREEN_PIN 26
@@ -44,7 +44,17 @@ bool signupOK = false;
 bool ledStatus = false;
 bool fanStatus = false;
 
-// Fungsi untuk menghitung kejernihan berdasarkan nilai tegangan turbidity
+unsigned long timerDuration = 0; // Inisialisasi tanpa nilai default
+unsigned long previousTimerDuration = 0; // Untuk menyimpan nilai sebelumnya
+unsigned long startTime = 0;
+bool isLightOn = false;
+
+// Tambahkan di bagian deklarasi variabel global
+unsigned long lastResetTime = 0;  // Waktu terakhir reset
+const unsigned long RESET_INTERVAL = 24 * 60 * 60 * 1000; // 24 jam dalam milidetik
+bool isAutoMode = true; // Default mode otomatis
+
+// Fungsi untuk membaca kejernihan berdasarkan nilai tegangan turbidity
 String readClarity() {
     int nilai_analog_turbidity = analogRead(TURBIDITY_PIN);
     int tegangan_turbidity = map(nilai_analog_turbidity, 0, 4095, 0, 3300);
@@ -52,7 +62,6 @@ String readClarity() {
     if (clarity_percentage < 0) clarity_percentage = 0;
     if (clarity_percentage > 100) clarity_percentage = 100;
 
-    // Menentukan status kejernihan
     if (clarity_percentage < 30) {
         return "Kotor";
     } else if (clarity_percentage < 70) {
@@ -62,6 +71,7 @@ String readClarity() {
     }
 }
 
+// Fungsi untuk koneksi Wi-Fi
 void connectToWiFi() {
     lcd.setCursor(0, 0);
     lcd.print(F("Hubungkan Wi-Fi"));
@@ -82,6 +92,7 @@ void connectToWiFi() {
     lcd.print(F("Terhubung ke Wi-Fi"));
 }
 
+// Fungsi untuk koneksi ke Firebase
 void handleFirebaseConnection() {
     if (Firebase.signUp(&config, &auth, "", "")) {
         signupOK = true;
@@ -94,24 +105,31 @@ void handleFirebaseConnection() {
     }
 }
 
+// Fungsi untuk memperbarui status relay dari Firebase
 void updateRelayStatus() {
-    if (Firebase.RTDB.getBool(&fbdo, "relays/led")) {
-        ledStatus = fbdo.boolData();
-        digitalWrite(RELAY_LED_PIN, ledStatus ? HIGH : LOW);
-        Serial.println(ledStatus ? "Lampu HIDUP" : "Lampu MATI");
-    } else {
-        Serial.println("Gagal mendapatkan status lampu dari Firebase.");
+    // Cek mode otomatis/manual dari Firebase
+    if (Firebase.RTDB.getBool(&fbdo, "mode/otomatis")) {
+        isAutoMode = fbdo.boolData();
+        Serial.println(isAutoMode ? "Mode: Otomatis" : "Mode: Manual");
     }
 
-    if (Firebase.RTDB.getBool(&fbdo, "relays/fan")) {
-        fanStatus = fbdo.boolData();
-        digitalWrite(RELAY_FAN_PIN, fanStatus ? HIGH : LOW);
-        Serial.println(fanStatus ? "Kipas HIDUP" : "Kipas MATI");
-    } else {
-        Serial.println("Gagal mendapatkan status kipas dari Firebase.");
+    // Jika mode manual, ambil status relay dari Firebase
+    if (!isAutoMode) {
+        if (Firebase.RTDB.getBool(&fbdo, "relays/led")) {
+            ledStatus = fbdo.boolData();
+            digitalWrite(RELAY_LED_PIN, ledStatus ? LOW : HIGH);
+            Serial.println(ledStatus ? "Lampu HIDUP" : "Lampu MATI");
+        }
+
+        if (Firebase.RTDB.getBool(&fbdo, "relays/fan")) {
+            fanStatus = fbdo.boolData();
+            digitalWrite(RELAY_FAN_PIN, fanStatus ? LOW : HIGH);
+            Serial.println(fanStatus ? "Kipas HIDUP" : "Kipas MATI");
+        }
     }
 }
 
+// Fungsi untuk mengatur warna RGB berdasarkan suhu
 void setRGBColor(int temperature) {
     if (temperature < 20) {
         analogWrite(RED_PIN, 0);
@@ -128,27 +146,39 @@ void setRGBColor(int temperature) {
     }
 }
 
-void displayData(int temperature, int pH, int lux, String clarity, bool ledStatus, bool fanStatus) {
+// Fungsi untuk menampilkan data di LCD
+void displayData(int temperature, int pH, int lux, String clarity, bool ledStatus, bool fanStatus, unsigned long remainingTime) {
+    unsigned long hours = remainingTime / (60 * 60 * 1000);
+    unsigned long minutes = (remainingTime % (60 * 60 * 1000)) / (60 * 1000);
+    unsigned long seconds = (remainingTime % (60 * 1000)) / 1000;
+
     lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("T: "));
+    lcd.print(hours);
+    lcd.print(F("h "));
+    lcd.print(minutes);
+    lcd.print(F("m "));
+    lcd.print(seconds);
+    lcd.print(F("s"));
+
     lcd.setCursor(0, 1);
-    lcd.print(F("Suhu :"));
+    lcd.print(F("Air :"));
+    lcd.print(clarity);
+
+    lcd.setCursor(11, 1);
+    lcd.print(F("| pH:"));
+    lcd.print(pH);
+
+    lcd.setCursor(0, 2);
+    lcd.print(F("Suhu:"));
     lcd.print(temperature);
     lcd.write(0xDF);
     lcd.print(F("C"));
 
-    lcd.setCursor(0, 0);
-    lcd.print(F("Air  :"));
-    lcd.print(clarity);  // Tampilkan status kejernihan sebagai string
-
-    lcd.setCursor(0, 2);
-    lcd.print(F("pH   :"));
-    lcd.print(pH);
-    lcd.print(F(""));
-
     lcd.setCursor(0, 3);
-    lcd.print(F("Lux  :"));
+    lcd.print(F("Lux :"));
     lcd.print(lux);
-    lcd.print(F(""));
 
     lcd.setCursor(11, 2);
     lcd.print(F("| Led:"));
@@ -158,23 +188,27 @@ void displayData(int temperature, int pH, int lux, String clarity, bool ledStatu
     lcd.print(F("| Fan:"));
     lcd.print(fanStatus ? F("ON") : F("OFF"));
 
+    // Tambahkan indikator mode
+    lcd.setCursor(19, 0);
+    lcd.print(isAutoMode ? F("A") : F("M")); // A untuk Otomatis, M untuk Manual
+
     delay(2000);
 }
 
 void setup() {
     Serial.begin(115200);
-    
+
     pinMode(PH_SENSOR_PIN, INPUT);
     pinMode(TURBIDITY_PIN, INPUT);
     pinMode(RELAY_LED_PIN, OUTPUT);
     pinMode(RELAY_FAN_PIN, OUTPUT);
-    digitalWrite(RELAY_LED_PIN, LOW);
-    digitalWrite(RELAY_FAN_PIN, LOW);
+    digitalWrite(RELAY_LED_PIN, HIGH);
+    digitalWrite(RELAY_FAN_PIN, HIGH);
 
     pinMode(RED_PIN, OUTPUT);
     pinMode(GREEN_PIN, OUTPUT);
     pinMode(BLUE_PIN, OUTPUT);
-    
+
     lcd.init();
     lcd.backlight();
 
@@ -195,12 +229,18 @@ void setup() {
 
     sensors.begin();
     lightMeter.begin();
+
+    // Ambil nilai timer dari Firebase
+    if (Firebase.RTDB.getInt(&fbdo, "settings/timerDuration")) {
+        timerDuration = fbdo.intData() * 60 * 60 * 1000; // Konversi jam ke milidetik
+        previousTimerDuration = timerDuration; // Simpan nilai awal
+    }
 }
 
 void loop() {
     if (Firebase.ready() && signupOK && (millis() - sendDataPrevMillis > 2000 || sendDataPrevMillis == 0)) {
         sendDataPrevMillis = millis();
-        
+
         nilai_analog_PH = analogRead(PH_SENSOR_PIN);
         TeganganPh = 3.3 / 4096.0 * nilai_analog_PH;
         PH_step = (PH4 - PH9) / 5.17;
@@ -209,28 +249,73 @@ void loop() {
         sensors.requestTemperatures();
         int temperature = static_cast<int>(sensors.getTempCByIndex(0));
         int lux = static_cast<int>(lightMeter.readLightLevel());
-        String clarity = readClarity(); // Ambil status kejernihan sebagai string
+        String clarity = readClarity();
 
-        // Kontrol kipas berdasarkan suhu
-        fanStatus = (temperature > 30);
-        digitalWrite(RELAY_FAN_PIN, fanStatus ? HIGH : LOW);
-        Firebase.RTDB.setBool(&fbdo, "relays/fan", fanStatus);
+        // Deklarasi remainingTime di sini
+        unsigned long elapsedTime = millis() - startTime;
+        unsigned long remainingTime = (timerDuration > elapsedTime) ? (timerDuration - elapsedTime) : 0;
 
-        // Kontrol lampu berdasarkan pembacaan lux
-        ledStatus = (lux < 200);
-        digitalWrite(RELAY_LED_PIN, ledStatus ? HIGH : LOW);
-        Firebase.RTDB.setBool(&fbdo, "relays/led", ledStatus); // Kirim status LED ke Firebase
+        // Update mode otomatis/manual
+        updateRelayStatus();
+
+        if (isAutoMode) {
+            // Mode Otomatis
+            // Kontrol kipas berdasarkan suhu
+            fanStatus = (temperature > 30);
+            digitalWrite(RELAY_FAN_PIN, fanStatus ? LOW : HIGH);
+            Firebase.RTDB.setBool(&fbdo, "relays/fan", fanStatus);
+
+            // Kontrol lampu berdasarkan timer
+            if (timerDuration > 0 && remainingTime > 0) {
+                // Timer masih berjalan, nyalakan lampu
+                if (!isLightOn) {
+                    isLightOn = true;
+                    digitalWrite(RELAY_LED_PIN, LOW);
+                    Firebase.RTDB.setBool(&fbdo, "relays/led", true);
+                    Serial.println("Timer berjalan - Lampu HIDUP");
+                }
+            } else {
+                // Timer berhenti (habis atau diatur ke 0)
+                if (isLightOn) {
+                    // Matikan lampu
+                    isLightOn = false;
+                    digitalWrite(RELAY_LED_PIN, HIGH);
+                    Firebase.RTDB.setBool(&fbdo, "relays/led", false);
+                    Serial.println("Timer berhenti - Lampu MATI");
+                }
+            }
+
+            // Periksa pembaruan timer dari Firebase
+            if (Firebase.RTDB.getInt(&fbdo, "settings/timerDuration")) {
+                unsigned long newTimerDuration = fbdo.intData() * 60 * 60 * 1000;
+                if (newTimerDuration != previousTimerDuration) {
+                    timerDuration = newTimerDuration;
+                    previousTimerDuration = newTimerDuration;
+                    startTime = millis();
+                    lastResetTime = millis();
+                    
+                    if (timerDuration == 0) {
+                        isLightOn = false;
+                        digitalWrite(RELAY_LED_PIN, HIGH);
+                        Firebase.RTDB.setBool(&fbdo, "relays/led", false);
+                        Serial.println("Timer diatur ke 0 - Lampu MATI");
+                    }
+                    
+                    Serial.print("Timer diperbarui: ");
+                    Serial.println(timerDuration);
+                }
+            }
+        }
 
         setRGBColor(temperature);
         updateRelayStatus();
 
         int pHInt = static_cast<int>(Po);
-        displayData(temperature, pHInt, lux, clarity, ledStatus, fanStatus);
+        displayData(temperature, pHInt, lux, clarity, ledStatus, fanStatus, remainingTime);
 
         bool dataSent = false;
         int retryCount = 0;
 
-        // Kirim kejernihan ke Firebase
         while (!dataSent && retryCount < 3) {
             if (Firebase.RTDB.setString(&fbdo, "sensors/clarity", clarity) &&
                 Firebase.RTDB.setInt(&fbdo, "sensors/ph", pHInt) &&
@@ -241,11 +326,11 @@ void loop() {
             } else {
                 Serial.printf("Kesalahan saat mengirim data ke Firebase: %s\n", fbdo.errorReason().c_str());
                 retryCount++;
-                delay(1000); // Tunggu sebelum mencoba lagi
+                delay(1000);
             }
         }
     }
 
-    // Pembaruan status relai dari Firebase
+    // Pembaruan status relay dari Firebase
     updateRelayStatus();
 }
