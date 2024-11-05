@@ -55,13 +55,20 @@ const unsigned long RESET_INTERVAL = 24 * 60 * 60 * 1000; // 24 jam dalam milide
 bool isAutoMode = true; // Default mode otomatis
 
 // Fungsi untuk membaca kejernihan berdasarkan nilai tegangan turbidity
-String readClarity() {
+int readClarity() {
     int nilai_analog_turbidity = analogRead(TURBIDITY_PIN);
     int tegangan_turbidity = map(nilai_analog_turbidity, 0, 4095, 0, 3300);
     int clarity_percentage = map(tegangan_turbidity, 400, 3000, 0, 100);
+    
+    // Batasi nilai antara 0-100
     if (clarity_percentage < 0) clarity_percentage = 0;
     if (clarity_percentage > 100) clarity_percentage = 100;
+    
+    return clarity_percentage;
+}
 
+// Tambahkan fungsi untuk mendapatkan status kejernihan berdasarkan persentase
+String getClarityStatus(int clarity_percentage) {
     if (clarity_percentage < 30) {
         return "Kotor";
     } else if (clarity_percentage < 70) {
@@ -249,11 +256,22 @@ void loop() {
         sensors.requestTemperatures();
         int temperature = static_cast<int>(sensors.getTempCByIndex(0));
         int lux = static_cast<int>(lightMeter.readLightLevel());
-        String clarity = readClarity();
+        
+        // Dapatkan nilai persentase kejernihan
+        int clarity_percentage = readClarity();
+        // Dapatkan status kejernihan untuk display LCD
+        String clarityStatus = getClarityStatus(clarity_percentage);
 
-        // Deklarasi remainingTime di sini
+        // Hitung waktu yang tersisa
         unsigned long elapsedTime = millis() - startTime;
         unsigned long remainingTime = (timerDuration > elapsedTime) ? (timerDuration - elapsedTime) : 0;
+
+        // Cek reset harian
+        if (millis() - lastResetTime >= RESET_INTERVAL) {
+            startTime = millis();
+            lastResetTime = millis();
+            Serial.println("Timer di-reset harian");
+        }
 
         // Update mode otomatis/manual
         updateRelayStatus();
@@ -265,44 +283,66 @@ void loop() {
             digitalWrite(RELAY_FAN_PIN, fanStatus ? LOW : HIGH);
             Firebase.RTDB.setBool(&fbdo, "relays/fan", fanStatus);
 
-            // Kontrol lampu berdasarkan timer
+            // Kontrol lampu berdasarkan timer dan cahaya
             if (timerDuration > 0 && remainingTime > 0) {
-                // Timer masih berjalan, nyalakan lampu
-                if (!isLightOn) {
-                    isLightOn = true;
-                    digitalWrite(RELAY_LED_PIN, LOW);
-                    Firebase.RTDB.setBool(&fbdo, "relays/led", true);
-                    Serial.println("Timer berjalan - Lampu HIDUP");
+                // Timer aktif, cek intensitas cahaya
+                if (lux < 300) {  // Jika cahaya kurang
+                    if (!isLightOn) {
+                        isLightOn = true;
+                        ledStatus = true;
+                        digitalWrite(RELAY_LED_PIN, LOW);
+                        Firebase.RTDB.setBool(&fbdo, "relays/led", true);
+                        Serial.println("Cahaya kurang - Lampu HIDUP");
+                    }
+                } else {  // Jika cahaya cukup
+                    if (isLightOn) {
+                        isLightOn = false;
+                        ledStatus = false;
+                        digitalWrite(RELAY_LED_PIN, HIGH);
+                        Firebase.RTDB.setBool(&fbdo, "relays/led", false);
+                        Serial.println("Cahaya cukup - Lampu MATI");
+                    }
                 }
             } else {
-                // Timer berhenti (habis atau diatur ke 0)
+                // Timer habis atau tidak aktif
                 if (isLightOn) {
-                    // Matikan lampu
                     isLightOn = false;
+                    ledStatus = false;
                     digitalWrite(RELAY_LED_PIN, HIGH);
                     Firebase.RTDB.setBool(&fbdo, "relays/led", false);
-                    Serial.println("Timer berhenti - Lampu MATI");
+                    Serial.println("Timer habis - Lampu MATI");
                 }
             }
 
-            // Periksa pembaruan timer dari Firebase
-            if (Firebase.RTDB.getInt(&fbdo, "settings/timerDuration")) {
-                unsigned long newTimerDuration = fbdo.intData() * 60 * 60 * 1000;
-                if (newTimerDuration != previousTimerDuration) {
-                    timerDuration = newTimerDuration;
-                    previousTimerDuration = newTimerDuration;
-                    startTime = millis();
-                    lastResetTime = millis();
+            // Periksa pembaruan timer dari Firebase (menggunakan satu field)
+            if (Firebase.RTDB.getString(&fbdo, "settings/timer")) {
+                String timerStr = fbdo.stringData();
+                int hours = 0, minutes = 0;
+                
+                // Format yang diharapkan: "HH:mm"
+                if (sscanf(timerStr.c_str(), "%d:%d", &hours, &minutes) == 2) {
+                    unsigned long newTimerDuration = (hours * 60 + minutes) * 60 * 1000; // Konversi ke milidetik
                     
-                    if (timerDuration == 0) {
-                        isLightOn = false;
-                        digitalWrite(RELAY_LED_PIN, HIGH);
-                        Firebase.RTDB.setBool(&fbdo, "relays/led", false);
-                        Serial.println("Timer diatur ke 0 - Lampu MATI");
+                    if (newTimerDuration != previousTimerDuration) {
+                        timerDuration = newTimerDuration;
+                        previousTimerDuration = newTimerDuration;
+                        startTime = millis();
+                        lastResetTime = millis();
+                        
+                        if (timerDuration == 0) {
+                            isLightOn = false;
+                            ledStatus = false;
+                            digitalWrite(RELAY_LED_PIN, HIGH);
+                            Firebase.RTDB.setBool(&fbdo, "relays/led", false);
+                            Serial.println("Timer diatur ke 0 - Lampu MATI");
+                        } else {
+                            Serial.print("Timer diperbarui: ");
+                            Serial.print(hours);
+                            Serial.print(":");
+                            Serial.print(minutes);
+                            Serial.println();
+                        }
                     }
-                    
-                    Serial.print("Timer diperbarui: ");
-                    Serial.println(timerDuration);
                 }
             }
         }
@@ -311,17 +351,17 @@ void loop() {
         updateRelayStatus();
 
         int pHInt = static_cast<int>(Po);
-        displayData(temperature, pHInt, lux, clarity, ledStatus, fanStatus, remainingTime);
+        displayData(temperature, pHInt, lux, clarityStatus, ledStatus, fanStatus, remainingTime);
 
         bool dataSent = false;
         int retryCount = 0;
 
         while (!dataSent && retryCount < 3) {
-            if (Firebase.RTDB.setString(&fbdo, "sensors/clarity", clarity) &&
+            if (Firebase.RTDB.setInt(&fbdo, "sensors/clarity", clarity_percentage) && // Kirim persentase kejernihan
                 Firebase.RTDB.setInt(&fbdo, "sensors/ph", pHInt) &&
                 Firebase.RTDB.setInt(&fbdo, "sensors/temperature", temperature) &&
                 Firebase.RTDB.setInt(&fbdo, "sensors/lux", lux)) {
-                Serial.println(F("Nilai pH, suhu, cahaya, dan kejernihan telah dikirim ke Firebase."));
+                Serial.println(F("Data sensor telah dikirim ke Firebase."));
                 dataSent = true;
             } else {
                 Serial.printf("Kesalahan saat mengirim data ke Firebase: %s\n", fbdo.errorReason().c_str());
