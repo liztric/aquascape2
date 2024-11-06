@@ -253,6 +253,13 @@ void loop() {
         PH_step = (PH4 - PH9) / 5.17;
         Po = 7.00 + ((PH9 - TeganganPh) / PH_step);
 
+        Serial.print("Nilai ADC PH = ");
+        Serial.println(nilai_analog_PH);
+        Serial.print("TeganganPh = ");
+        Serial.println(TeganganPh, 3);
+        Serial.print("Nilai PH cairan = ");
+        Serial.println(Po, 2);
+
         sensors.requestTemperatures();
         int temperature = static_cast<int>(sensors.getTempCByIndex(0));
         int lux = static_cast<int>(lightMeter.readLightLevel());
