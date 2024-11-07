@@ -54,6 +54,10 @@ unsigned long lastResetTime = 0;  // Waktu terakhir reset
 const unsigned long RESET_INTERVAL = 24 * 60 * 60 * 1000; // 24 jam dalam milidetik
 bool isAutoMode = true; // Default mode otomatis
 
+// Tambahkan variabel global untuk batas suhu
+int batasSuhuRendah = 30;  // default value
+int batasSuhuTinggi = 40;  // default value
+
 // Fungsi untuk membaca kejernihan berdasarkan nilai tegangan turbidity
 int readClarity() {
     int nilai_analog_turbidity = analogRead(TURBIDITY_PIN);
@@ -136,20 +140,38 @@ void updateRelayStatus() {
     }
 }
 
-// Fungsi untuk mengatur warna RGB berdasarkan suhu
+// Fungsi untuk mengatur warna RGB dan kipas berdasarkan suhu
 void setRGBColor(int temperature) {
-    if (temperature < 20) {
+    if (temperature < batasSuhuRendah) {
+        // Suhu dingin - LED biru - Kipas mati
         analogWrite(RED_PIN, 0);
         analogWrite(GREEN_PIN, 0);
         analogWrite(BLUE_PIN, 255);
-    } else if (temperature < 32) {
+        if (isAutoMode) {
+            fanStatus = false;
+            digitalWrite(RELAY_FAN_PIN, HIGH);
+            Firebase.RTDB.setBool(&fbdo, "relays/fan", fanStatus);
+        }
+    } else if (temperature < batasSuhuTinggi) {
+        // Suhu normal - LED hijau - Kipas mati
         analogWrite(RED_PIN, 0);
         analogWrite(GREEN_PIN, 255);
         analogWrite(BLUE_PIN, 0);
+        if (isAutoMode) {
+            fanStatus = false;
+            digitalWrite(RELAY_FAN_PIN, HIGH);
+            Firebase.RTDB.setBool(&fbdo, "relays/fan", fanStatus);
+        }
     } else {
+        // Suhu panas - LED merah - Kipas hidup
         analogWrite(RED_PIN, 255);
         analogWrite(GREEN_PIN, 0);
         analogWrite(BLUE_PIN, 0);
+        if (isAutoMode) {
+            fanStatus = true;
+            digitalWrite(RELAY_FAN_PIN, LOW);
+            Firebase.RTDB.setBool(&fbdo, "relays/fan", fanStatus);
+        }
     }
 }
 
@@ -242,11 +264,31 @@ void setup() {
         timerDuration = fbdo.intData() * 60 * 60 * 1000; // Konversi jam ke milidetik
         previousTimerDuration = timerDuration; // Simpan nilai awal
     }
+
+    // Ambil pengaturan batas suhu dari Firebase
+    if (Firebase.RTDB.getString(&fbdo, "settings/batasSuhu")) {
+        String batasSuhu = fbdo.stringData();
+        sscanf(batasSuhu.c_str(), "%d,%d", &batasSuhuRendah, &batasSuhuTinggi);
+        Serial.printf("Batas suhu diatur: %d-%d\n", batasSuhuRendah, batasSuhuTinggi);
+    }
 }
 
 void loop() {
     if (Firebase.ready() && signupOK && (millis() - sendDataPrevMillis > 2000 || sendDataPrevMillis == 0)) {
         sendDataPrevMillis = millis();
+
+        // Baca batas suhu dari Firebase secara realtime
+        if (Firebase.RTDB.getString(&fbdo, "settings/batasSuhu")) {
+            String batasSuhu = fbdo.stringData();
+            int suhuRendah, suhuTinggi;
+            if (sscanf(batasSuhu.c_str(), "%d,%d", &suhuRendah, &suhuTinggi) == 2) {
+                if (batasSuhuRendah != suhuRendah || batasSuhuTinggi != suhuTinggi) {
+                    batasSuhuRendah = suhuRendah;
+                    batasSuhuTinggi = suhuTinggi;
+                    Serial.printf("Batas suhu diperbarui: %d-%d\n", batasSuhuRendah, batasSuhuTinggi);
+                }
+            }
+        }
 
         nilai_analog_PH = analogRead(PH_SENSOR_PIN);
         TeganganPh = 3.3 / 4096.0 * nilai_analog_PH;
@@ -285,11 +327,6 @@ void loop() {
 
         if (isAutoMode) {
             // Mode Otomatis
-            // Kontrol kipas berdasarkan suhu
-            fanStatus = (temperature > 30);
-            digitalWrite(RELAY_FAN_PIN, fanStatus ? LOW : HIGH);
-            Firebase.RTDB.setBool(&fbdo, "relays/fan", fanStatus);
-
             // Kontrol lampu berdasarkan timer dan cahaya
             if (timerDuration > 0 && remainingTime > 0) {
                 // Timer aktif, cek intensitas cahaya
