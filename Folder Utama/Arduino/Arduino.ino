@@ -21,6 +21,12 @@
 #define GREEN_PIN 26
 #define BLUE_PIN 25
 
+#define SDA_PIN 21
+#define SCL_PIN 22
+
+#define LCD_I2C_ADDR 0x27  // Alamat default LCD I2C
+#define BH1750_I2C_ADDR 0x23  // Alamat default BH1750 (bisa juga 0x5C)
+
 FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
@@ -224,6 +230,33 @@ void displayData(int temperature, int pH, int lux, String clarity, bool ledStatu
     delay(2000);
 }
 
+void scanI2CDevices() {
+    byte error, address;
+    int nDevices = 0;
+    
+    Serial.println("\nMemindai perangkat I2C...");
+    
+    for(address = 1; address < 127; address++) {
+        Wire.beginTransmission(address);
+        error = Wire.endTransmission();
+        
+        if (error == 0) {
+            Serial.print("Perangkat I2C ditemukan di alamat 0x");
+            if (address < 16) {
+                Serial.print("0");
+            }
+            Serial.println(address, HEX);
+            nDevices++;
+        }
+    }
+    
+    if (nDevices == 0) {
+        Serial.println("Tidak ada perangkat I2C yang ditemukan\n");
+    } else {
+        Serial.printf("Ditemukan %d perangkat I2C\n\n", nDevices);
+    }
+}
+
 void setup() {
     Serial.begin(115200);
 
@@ -257,7 +290,23 @@ void setup() {
     handleFirebaseConnection();
 
     sensors.begin();
-    lightMeter.begin();
+    Wire.begin(SDA_PIN, SCL_PIN);
+    scanI2CDevices();
+    
+    byte retries = 0;
+    while (retries < 3) {
+        if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
+            Serial.println("BH1750 berhasil diinisialisasi!");
+            break;
+        }
+        Serial.println("Error inisialisasi BH1750, mencoba lagi...");
+        delay(1000);
+        retries++;
+    }
+    
+    if (retries == 3) {
+        Serial.println("BH1750 gagal diinisialisasi setelah 3 kali percobaan");
+    }
 
     // Ambil nilai timer dari Firebase
     if (Firebase.RTDB.getInt(&fbdo, "settings/timerDuration")) {
@@ -292,8 +341,11 @@ void loop() {
 
         nilai_analog_PH = analogRead(PH_SENSOR_PIN);
         TeganganPh = 3.3 / 4096.0 * nilai_analog_PH;
-        PH_step = (PH4 - PH9) / 5.17;
+        PH_step = (PH4 - PH9) / 5.0;
         Po = 7.00 + ((PH9 - TeganganPh) / PH_step);
+
+        // Batasi nilai pH antara 0-14
+        Po = constrain(Po, 0, 14);
 
         Serial.print("Nilai ADC PH = ");
         Serial.println(nilai_analog_PH);
@@ -304,7 +356,18 @@ void loop() {
 
         sensors.requestTemperatures();
         int temperature = static_cast<int>(sensors.getTempCByIndex(0));
-        int lux = static_cast<int>(lightMeter.readLightLevel());
+        int lux = 0;
+        if (lightMeter.begin()) {
+            delay(10); // Tambahkan delay kecil
+            float luxReading = lightMeter.readLightLevel();
+            if (luxReading >= 0) {
+                lux = static_cast<int>(luxReading);
+            }
+            Serial.print("Nilai Lux: ");
+            Serial.println(lux);
+        } else {
+            Serial.println("Error membaca BH1750");
+        }
         
         // Dapatkan nilai persentase kejernihan
         int clarity_percentage = readClarity();
