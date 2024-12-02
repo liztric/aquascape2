@@ -16,6 +16,7 @@
 
 #define RELAY_LED_PIN 5  // GPIO untuk relay LED
 #define RELAY_FAN_PIN 18  // GPIO untuk relay kipas
+#define RELAY_AERATOR_PIN 19  // GPIO untuk relay aerator
 
 #define RED_PIN 27
 #define GREEN_PIN 26
@@ -26,6 +27,11 @@
 
 #define LCD_I2C_ADDR 0x27  // Alamat default LCD I2C
 #define BH1750_I2C_ADDR 0x23  // Alamat default BH1750 (bisa juga 0x5C)
+
+#define BTN_MODE_PIN 14
+#define BTN_LED_PIN 4
+#define BTN_AERATORS_PIN 2
+#define BTN_FAN_PIN 15
 
 FirebaseData fbdo;
 FirebaseAuth auth;
@@ -49,6 +55,7 @@ bool signupOK = false;
 
 bool ledStatus = false;
 bool fanStatus = false;
+bool aeratorStatus = false;
 
 unsigned long timerDuration = 0; // Inisialisasi tanpa nilai default
 unsigned long previousTimerDuration = 0; // Untuk menyimpan nilai sebelumnya
@@ -264,8 +271,10 @@ void setup() {
     pinMode(TURBIDITY_PIN, INPUT);
     pinMode(RELAY_LED_PIN, OUTPUT);
     pinMode(RELAY_FAN_PIN, OUTPUT);
+    pinMode(RELAY_AERATOR_PIN, OUTPUT);
     digitalWrite(RELAY_LED_PIN, HIGH);
     digitalWrite(RELAY_FAN_PIN, HIGH);
+    digitalWrite(RELAY_AERATOR_PIN, HIGH);
 
     pinMode(RED_PIN, OUTPUT);
     pinMode(GREEN_PIN, OUTPUT);
@@ -320,6 +329,12 @@ void setup() {
         sscanf(batasSuhu.c_str(), "%d,%d", &batasSuhuRendah, &batasSuhuTinggi);
         Serial.printf("Batas suhu diatur: %d-%d\n", batasSuhuRendah, batasSuhuTinggi);
     }
+
+    // Inisialisasi pin tombol
+    pinMode(BTN_MODE_PIN, INPUT_PULLUP);
+    pinMode(BTN_LED_PIN, INPUT_PULLUP);
+    pinMode(BTN_AERATORS_PIN, INPUT_PULLUP);
+    pinMode(BTN_FAN_PIN, INPUT_PULLUP);
 }
 
 void loop() {
@@ -480,4 +495,40 @@ void loop() {
 
     // Pembaruan status relay dari Firebase
     updateRelayStatus();
+
+    // Cek status tombol
+    if (digitalRead(BTN_MODE_PIN) == LOW) {
+        // Ubah mode otomatis/manual
+        isAutoMode = !isAutoMode;
+        Firebase.RTDB.setBool(&fbdo, "mode/otomatis", isAutoMode);
+        Serial.println(isAutoMode ? "Mode: Otomatis" : "Mode: Manual");
+        delay(300); // Debounce delay
+    }
+
+    if (digitalRead(BTN_LED_PIN) == LOW) {
+        // Ubah status relay LED
+        ledStatus = !ledStatus;
+        digitalWrite(RELAY_LED_PIN, ledStatus ? LOW : HIGH);
+        Firebase.RTDB.setBool(&fbdo, "relays/led", ledStatus);
+        Serial.println(ledStatus ? "LED: HIDUP" : "LED: MATI");
+        delay(300); // Debounce delay
+    }
+
+    if (digitalRead(BTN_AERATORS_PIN) == LOW) {
+        // Ubah status relay aerator
+        aeratorStatus = !aeratorStatus; // Pastikan Anda mendeklarasikan aeratorStatus
+        digitalWrite(RELAY_AERATOR_PIN, aeratorStatus ? LOW : HIGH);
+        Firebase.RTDB.setBool(&fbdo, "relays/aerator", aeratorStatus);
+        Serial.println(aeratorStatus ? "Aerator: HIDUP" : "Aerator: MATI");
+        delay(300); // Debounce delay
+    }
+
+    if (digitalRead(BTN_FAN_PIN) == LOW) {
+        // Ubah status relay fan
+        fanStatus = !fanStatus;
+        digitalWrite(RELAY_FAN_PIN, fanStatus ? LOW : HIGH);
+        Firebase.RTDB.setBool(&fbdo, "relays/fan", fanStatus);
+        Serial.println(fanStatus ? "Fan: HIDUP" : "Fan: MATI");
+        delay(300); // Debounce delay
+    }
 }
