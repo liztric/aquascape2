@@ -234,7 +234,7 @@ void displayData(int temperature, int pH, int lux, String clarity, bool ledStatu
     lcd.setCursor(19, 0);
     lcd.print(isAutoMode ? F("A") : F("M")); // A untuk Otomatis, M untuk Manual
 
-    delay(2000);
+    delay(1000);
 }
 
 void scanI2CDevices() {
