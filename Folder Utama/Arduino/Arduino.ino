@@ -85,14 +85,8 @@ int readClarity() {
 }
 
 // Tambahkan fungsi untuk mendapatkan status kejernihan berdasarkan persentase
-String getClarityStatus(int clarity_percentage) {
-    if (clarity_percentage < 30) {
-        return "Kotor";
-    } else if (clarity_percentage < 70) {
-        return "Keruh";
-    } else {
-        return "Jernih";
-    }
+int getClarityStatus(int clarity_percentage) {
+    return clarity_percentage; // Mengembalikan nilai persentase kejernihan
 }
 
 // Fungsi untuk koneksi Wi-Fi
@@ -207,6 +201,7 @@ void displayData(int temperature, int pH, int lux, String clarity, bool ledStatu
     lcd.setCursor(0, 1);
     lcd.print(F("Air :"));
     lcd.print(clarity);
+    lcd.print(F("%"));
 
     lcd.setCursor(11, 1);
     lcd.print(F("| pH:"));
@@ -387,7 +382,7 @@ void loop() {
         // Dapatkan nilai persentase kejernihan
         int clarity_percentage = readClarity();
         // Dapatkan status kejernihan untuk display LCD
-        String clarityStatus = getClarityStatus(clarity_percentage);
+        String clarityStatus = String(getClarityStatus(clarity_percentage));
 
         // Hitung waktu yang tersisa
         unsigned long elapsedTime = millis() - startTime;
